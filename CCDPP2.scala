@@ -21,19 +21,21 @@ object CCDPP2{
     val rowBlockSize = math.ceil(m.toDouble / numBlocks).toInt
     val colBlockSize = math.ceil(n.toDouble / numBlocks).toInt
 
-    var R = partitionData(V, rowBlockSize, numBlocks, m, n)
-    var RT = partitionData(V.map(x => Rating(x.item, x.user, x.rating)), colBlockSize, numBlocks, n, m)
-    val W = Array.fill(k)(Array.fill(m)(Random.nextDouble()))
+    var R = partitionData(V, colBlockSize, numBlocks, m, n).cache()
+    var RT = partitionData(V.map(x => Rating(x.item, x.user, x.rating)), rowBlockSize, numBlocks, n, m).cache()
+//    R.count()
+//    RT.count()
+    val W = Array.fill(k)(Array.fill(m)(0.1))
     val H = Array.fill(k)(Array.fill(n)(0.0))
 
 
     for (oiter <- 0 until maxIter) {
       for (t <- 0 until k) {
-        var u = W(t)
-        var v = H(t)
+        val u = W(t)
+        val v = H(t)
         val time0 = System.currentTimeMillis()
-        R = updateR(R, colBlockSize, u, v, true)
-        RT = updateR(RT, rowBlockSize, v, u, true)
+        R = updateR(R, colBlockSize, u, v, true).cache()
+        RT = updateR(RT, rowBlockSize, v, u, true).cache()
         R.count()
         RT.count()
 //        println(s"update R and RT time: ${(System.currentTimeMillis() - time0) / 1000.0}")
@@ -44,7 +46,7 @@ object CCDPP2{
           val distV = R.mapPartitions(iter => {
             val valU = bcU.value
             iter.map{case (r, rR) =>
-              val length = math.min(n - r * colBlockSize, colBlockSize)
+              val length = rR.numCols
               val newV = new Array[Double](length)
               for (j <- 0 until length) {
                 newV(j) = rankOneUpdate(rR, j, valU, lambda)
@@ -52,7 +54,7 @@ object CCDPP2{
               (r, newV)
             }
           })
-          v = collectArray(distV, n)
+          System.arraycopy(collectArray(distV, n), 0, v, 0, n)
 //          println(s"collect distV time: ${(System.currentTimeMillis() - time1) / 1000.0}")
 
           val bcV = sc.broadcast(v)
@@ -67,15 +69,19 @@ object CCDPP2{
               (r, newU)
             }
           })
-          u = collectArray(distU, m)
+          System.arraycopy(collectArray(distU, m), 0, u, 0, m)
         }
 
-        W(t) = u
-        H(t) = v
-        R = updateR(R, colBlockSize, u, v, false)
-        RT = updateR(RT, rowBlockSize, v, u, false)
+//        W(t) = u
+//        H(t) = v
+        R = updateR(R, colBlockSize, u, v, false).cache()
+        RT = updateR(RT, rowBlockSize, v, u, false).cache()
+//        R.count()
+//        RT.count()
 
-        println(R.map(x => x._2.toDense.values.map(x => x * x).sum).sum())
+//        println(oiter, t)
+        println(math.sqrt(R.map(x => x._2.toDense.values.map(x => x * x).sum).sum() / V.count()),
+          RT.map(x => x._2.toDense.values.map(x => x * x).sum).sum() / V.count())
       }
 
 
@@ -177,7 +183,7 @@ object CCDPP2{
 
   def readData(sc: SparkContext, path: String) = {
     sc.textFile(path).map(s => {
-      val ss = s.split(" ")
+      val ss = s.split("\t")
       Rating(ss(0).toInt, ss(1).toInt, ss(2).toFloat)
     })
   }
@@ -186,12 +192,19 @@ object CCDPP2{
     val conf = new SparkConf().setMaster("local").setAppName("ccdpp")
     val sc = new SparkContext(conf)
 
-    val path = "C:\\Users\\23oclock\\IdeaProjects\\test\\data\\test.txt"
-    val ratings = readData(sc, path)
-    ratings.foreach(x => println(x.user, x.item, x.rating))
+    val path = "C:\\Users\\23oclock\\IdeaProjects\\test\\data\\ml-100k\\u.data"
+    val time0 = System.currentTimeMillis()
+    val ratings = readData(sc, path).cache()
+    ratings.count()
+    println(s"data read time: ${(System.currentTimeMillis() - time0) / 1000.0}")
+//    ratings.foreach(x => println(x.user, x.item, x.rating))
 
-    train(ratings, 4, 10, 5, 3)
+    val time1 = System.currentTimeMillis()
+    train(ratings, 10, 10, 1, 3)
+    println(s"train time: ${(System.currentTimeMillis() - time1) / 1000.0}")
 
+
+    Thread.sleep(1000000)
     sc.stop()
   }
 }
